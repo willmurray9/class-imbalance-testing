@@ -15,6 +15,7 @@ from sklearn.metrics import (
     average_precision_score
 )
 import xgboost as xgb
+import re
 
 # Load environment
 load_dotenv()
@@ -230,7 +231,7 @@ class NDDStrokeAugmenter:
         print(f"   ⚠️  This will take several minutes and consume API credits!")
         print(f"   Model: {self.model_alias}\n")
         
-        result = self.client.generate(self.config_builder, num_records=num_records)
+        result = self.client.create(self.config_builder, num_records=num_records)
         
         print(f"\n✓ Generated {len(result.dataset)} synthetic samples!")
         return result.dataset
@@ -248,18 +249,15 @@ class NDDStrokeAugmenter:
         # Filter by plausibility if specified
         if min_plausibility is not None and 'medical_plausibility' in generated_df.columns:
             original_len = len(generated_df)
-            # Try to convert plausibility to numeric
-            try:
-                generated_df['plausibility_score'] = pd.to_numeric(
-                    generated_df['medical_plausibility'],
-                    errors='coerce'
-                )
-                generated_df = generated_df[
-                    generated_df['plausibility_score'] >= min_plausibility
-                ]
-                print(f"   Filtered by plausibility ≥{min_plausibility}: {original_len} → {len(generated_df)}")
-            except:
-                print(f"   ⚠️  Could not parse plausibility scores, keeping all records")
+            # Extract just the numeric value from the plausibility column
+            generated_df['plausibility_score'] = generated_df['medical_plausibility'].apply(
+                self._extract_plausibility_score
+            )
+            generated_df = generated_df[
+                generated_df['plausibility_score'] >= min_plausibility
+            ]
+            print(f"   ✓ Extracted plausibility scores (1-10) from LLM responses")
+            print(f"   Filtered by plausibility ≥{min_plausibility}: {original_len} → {len(generated_df)}")
         
         processed = pd.DataFrame()
         
@@ -292,6 +290,40 @@ class NDDStrokeAugmenter:
         print(f"   ✓ Processed {len(processed)} samples")
         return processed
     
+    @staticmethod
+    def _extract_plausibility_score(text):
+        """
+        Extract numeric plausibility score (1-10) from LLM response
+        Handles responses with <think> tags and explanations
+        
+        Args:
+            text: Raw LLM response text
+            
+        Returns:
+            Numeric score (1-10) or NaN if extraction fails
+        """
+        if pd.isna(text):
+            return np.nan
+        
+        text = str(text).strip()
+        
+        # Remove <think>...</think> tags and their content
+        text_cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        
+        # Find all numbers in the remaining text
+        numbers = re.findall(r'\b([1-9]|10)\b', text_cleaned)
+        
+        if numbers:
+            # Return the first valid number found
+            return int(numbers[0])
+        
+        # Fallback: try to find any number (1-10) in original text
+        numbers = re.findall(r'\b([1-9]|10)\b', text)
+        if numbers:
+            return int(numbers[0])
+        
+        return np.nan
+
     def create_augmented_dataset(self, processed_synthetic_df):
         """Combine original data with synthetic data"""
         print(f"\n🔗 Creating augmented dataset...")
